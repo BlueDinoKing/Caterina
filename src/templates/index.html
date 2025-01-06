@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Web Map</title>
+    <style>
+        #mynetwork {
+            width: 100%;
+            height: 98vh;
+        }
+        .vis-network {
+            background-color: #1e1e1e;
+        }
+        #searchBar {
+            margin: 10px;
+            padding: 10px;
+            border: 1px solid lightgray;
+            border-radius: 5px;
+            background-color: #f9f9f9;
+            position: absolute;
+            z-index: 1;
+        }
+    </style>
+</head>
+<body style="background-color: #1e1e1e;">
+    <input type="text" id="searchBar" oninput="searchNodes()" placeholder="Search for a node...">
+    <div id="mynetwork"></div>
+    <div id="popup"></div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/vis/4.21.0/vis.min.js"></script>
+    <script>
+        window.addEventListener('resize', function() {
+            network.redraw();
+        });
+        console.log('Hello, world!');
+
+        function mixColors(color1, color2, ratio) {
+            // Ensure the ratio is between 0 and 1
+            ratio = Math.max(0, Math.min(1, ratio));
+
+            // Parse the hex codes into RGB components
+            const hexToRgb = (hex) => {
+                const bigint = parseInt(hex.slice(1), 16);
+                return [(bigint >> 16) & 255, (bigint >> 8) & 255, bigint & 255];
+            };
+
+            const rgbToHex = (r, g, b) =>
+                `#${((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1).toUpperCase()}`;
+
+            const rgb1 = hexToRgb(color1);
+            const rgb2 = hexToRgb(color2);
+
+            // Blend the colors
+            const mixedRgb = rgb1.map((component, i) =>
+                Math.round(component * (1 - ratio) + rgb2[i] * ratio)
+            );
+
+            // Convert back to hex
+            return rgbToHex(mixedRgb[0], mixedRgb[1], mixedRgb[2]);
+        }
+
+        function rainbow(numOfSteps, step) {
+            // based on http://stackoverflow.com/a/7419630
+            // This function generates vibrant, "evenly spaced" colours (i.e. no clustering). This is ideal for creating easily distiguishable vibrant markers in Google Maps and other apps.
+            // Adam Cole, 2011-Sept-14
+            // HSV to RBG adapted from: http://mjijackson.com/2008/02/rgb-to-hsl-and-rgb-to-hsv-color-model-conversion-algorithms-in-javascript
+            var r, g, b;
+            var h = step / numOfSteps;
+            var i = ~~(h * 6);
+            var f = h * 6 - i;
+            var q = 1 - f;
+            switch(i % 6){
+                case 0: r = 1, g = f, b = 0; break;
+                case 1: r = q, g = 1, b = 0; break;
+                case 2: r = 0, g = 1, b = f; break;
+                case 3: r = 0, g = q, b = 1; break;
+                case 4: r = f, g = 0, b = 1; break;
+                case 5: r = 1, g = 0, b = q; break;
+            }
+            var c = "#" + ("00" + (~ ~(r * 235)).toString(16)).slice(-2) + ("00" + (~ ~(g * 235)).toString(16)).slice(-2) + ("00" + (~ ~(b * 235)).toString(16)).slice(-2);
+            return (c);
+        }
+
+        function darkenColor(color, amount) {
+            const num = parseInt(color.slice(1), 16);
+            const r = Math.max(0, (num >> 16) - amount);
+            const g = Math.max(0, ((num >> 8) & 0x00FF) - amount);
+            const b = Math.max(0, (num & 0x0000FF) - amount);
+            return `#${(r << 16 | g << 8 | b).toString(16).padStart(6, '0')}`;
+        }
+
+        function getTextColor(backgroundColor) {
+            const num = parseInt(backgroundColor.slice(1), 16);
+            const r = (num >> 16);
+            const g = ((num >> 8) & 0x00FF);
+            const b = (num & 0x0000FF);
+            const brightness = (r * 299 + g * 587 + b * 114) / 1000;
+            return brightness > 140 ? '#000000' : '#e0e0e0';
+        }
+
+        async function createDependencyNodes(nodes, edges, assignmentId, dependencies) {
+            const response = await fetch('/api/chapters');
+            const chapters = await response.json();
+
+            const chapterMap = {};
+            chapters.forEach(chapter => {
+                chapterMap[chapter.number] = chapter.name;
+            });
+
+            dependencies.forEach(dep => {
+                const depId = `chapter-${dep}`;
+                if (!nodes.get(depId)) {
+                    const chapterName = chapterMap[dep] || 'Unknown';
+                    nodes.add({
+                        id: depId,
+                        shape: 'box',
+                        size: 32,
+                        label: `${dep}: ${chapterName}`,
+                        color: rainbow(dependencies.length, dependencies.indexOf(dep)),
+                        font: { color: getTextColor(rainbow(dependencies.length, dependencies.indexOf(dep))) }
+                    });
+                }
+                edges.add({
+                    from: assignmentId,
+                    to: depId
+                });
+            });
+        }
+
+        async function reloadGraph() {
+            const nodes = new vis.DataSet();
+            const edges = new vis.DataSet();
+
+            // Fetch and create chapter nodes
+            const chaptersResponse = await fetch('/api/chapters');
+            const chapters = await chaptersResponse.json();
+            const chapterColors = chapters.map((chapter, index) => rainbow(chapters.length, index));
+            chapters.forEach((chapter, index) => {
+                const chapterId = `chapter-${chapter.number}`;
+                nodes.add({
+                    shape: 'box',
+                    id: chapterId,
+                    size: 32,
+                    label: `${chapter.number}: ${chapter.name}`,
+                    color: chapterColors[index],
+                    font: { color: getTextColor(chapterColors[index]) }
+                });
+            });
+
+            // Fetch and create assignment nodes and edges
+            const assignmentsResponse = await fetch('/api/assignments');
+            const assignmentsData = await assignmentsResponse.json();
+            console.log(assignmentsData);
+
+            assignmentsData.forEach((assignment, index) => {
+                const assignmentId = `assignment-${index}`;
+                const assignmentDependencies = assignment.dependencies;
+                let assignmentColor = '#0099ff'; // Default color
+
+                if (assignmentDependencies.length > 0) {
+                    const dependencyColors = assignmentDependencies.map(dep => {
+                        const chapter = chapters.find(ch => ch.number === dep);
+                        return chapter ? chapterColors[chapters.indexOf(chapter)] : '#0099ff';
+                    });
+                    assignmentColor = dependencyColors.reduce((acc, color, idx) => mixColors(acc, color, 1 / (idx + 1)), dependencyColors[0]);
+                }
+
+                nodes.add({
+                    shape: 'box',
+                    id: assignmentId,
+                    label: assignment.name,
+                    size: 16,
+                    color: assignmentColor,
+                    description: assignment.description,
+                    font: { color: getTextColor(assignmentColor) }
+                });
+
+                createDependencyNodes(nodes, edges, assignmentId, assignment.dependencies);
+            });
+
+            const container = document.getElementById('mynetwork');
+            const data = {
+                nodes: nodes,
+                edges: edges
+            };
+            const options = {
+                physics: {
+                    enabled: true,
+                    solver: 'forceAtlas2Based',
+                    forceAtlas2Based: {
+                        gravitationalConstant: -50,
+                        centralGravity: 0.01,
+                        springLength: 100,
+                        springConstant: 0.08
+                    },
+                    maxVelocity: 50,
+                    minVelocity: 0.1,
+                    timestep: 0.5,
+                    stabilization: { iterations: 150 }
+                }
+            };
+            const network = new vis.Network(container, data, options);
+
+            network.on('selectNode', function(params) {
+                const nodeId = params.nodes[0];
+                const node = nodes.get(nodeId);
+                if (node && node.description) {
+                    nodes.update({
+                        id: nodeId,
+                        label: `${node.label}\n\n${node.description}`,
+                        size: 32,
+                        font: { align: 'left' },
+                        widthConstraint: { maximum: 500 }
+                    });
+                }
+            });
+
+            network.on('deselectNode', function(params) {
+                const nodeId = params.previousSelection.nodes[0];
+                const node = nodes.get(nodeId);
+                if (node && node.description) {
+                    nodes.update({
+                        id: nodeId,
+                        label: node.label.split('\n\n')[0],
+                        size: 16
+                    });
+                }
+            });
+
+            window.searchNodes = function() {
+                const searchBar = document.getElementById('searchBar');
+                const searchValue = searchBar.value;
+                const searchResults = nodes.get({
+                    filter: node => node.label.toLowerCase().includes(searchValue.toLowerCase()) 
+                    || (node.description && node.description.toLowerCase().includes(searchValue.toLowerCase()))
+                });
+                const searchResultIds = searchResults.map(node => node.id);
+                nodes.update(searchResults.map(node => {
+                    return {
+                        id: node.id,
+                    };
+                }));
+                nodes.update(nodes.getIds().map(id => {
+                    return {
+                        id: id,
+                        hidden: !searchResultIds.includes(id)
+                    };
+                }));
+            };
+        }
+
+        reloadGraph();
+    </script>
+</body>
+</html>
